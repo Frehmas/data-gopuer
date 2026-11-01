@@ -1,183 +1,83 @@
-from __future__ import annotations
-
-from typing import Iterable, Iterator, List, Tuple
-
-import pandas as pd
-import streamlit as st
-
-# =============================================================================
-#  1)  مساعدة الفئة الأساسية (نفس المنطق السابق مع دالة  للسبب
-# linked with GitHub
-# =============================================================================
-class CeilingContainer:
-    """حاوية أرقام ذات سقف تصاعدي، مع حدٍّ أعلى لنسبة التجاوز."""
-
-    __slots__ = ("_items", "_max_slack")
-    DEFAULT_MAX_SLACK: float = 0.12
-    _EPS: float = 1e-12
-
-    def __init__(self,
-                 items: Iterable[float] = (),
-                 max_slack_ratio: float = DEFAULT_MAX_SLACK) -> None:
-        if not (0.0 <= max_slack_ratio < 1.0):
-            raise ValueError("max_slack_ratio يجب أن يكون في [0, 1)")
-        self._items: List[float] = sorted(self._validate(v) for v in items)
-        self._max_slack: float = max_slack_ratio
-
-    @staticmethod
-    def _validate(value: float) -> float:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise TypeError(f"يُسمح بالأرقام فقط: {value!r}")
-        return float(value)
-
-    # -------- خصائص --------
-    @property
-    def ceiling(self) -> float:
-        return self._items[-1] if self._items else 0.0
+class SmartContainer:
+    def __init__(self, initial_number=None, max_overflow_ratio=0.12):
+        """
+        تهيئة الحاوية الذكية.
+        :param initial_number: الرقم الأولي لتبدأ به الحاوية (اختياري).
+        :param max_overflow_ratio: نسبة التجاوز المسموح بها (الافتراضي 0.12 أي 12%).
+        """
+        self.numbers = []
+        self.max_overflow_ratio = max_overflow_ratio
+        
+        if initial_number is not None:
+            self.numbers.append(initial_number)
 
     @property
-    def real_sum(self) -> float:
-        return sum(self._items)
 
-
-    @property
-    def ceiling_sum(self) -> float:
-        return self.ceiling * len(self._items)
-
-    @property
-    def slack_ratio(self) -> float:
-        cs = self.ceiling_sum
-        if cs <= 0:
-            return 0.0
-        return max(0.0, (cs - self.real_sum) / cs)
+    def ceiling(self):
+        """إرجاع السقف (أكبر رقم في المجموعة)، وإذا كانت فارغة يكون 0."""
+        if not self.numbers:
+            return 0
+        return max(self.numbers)
 
     @property
-    def max_slack_ratio(self) -> float:
-        return self._max_slack
+    def current_sum(self):
+        """المجموع الحقيقي لأرقام المجموعة."""
+        return sum(self.numbers)
 
     @property
-    def items(self) -> Tuple[float, ...]:
-        return tuple(self._items)
+    def limit_sum(self):
+        """المجموع السقفي: السقف الحالي × عدد البيانات المضافة."""
+        return self.ceiling * len(self.numbers)
 
-    # -------- الشروط --------
-    def _slack_ratio_if_added(self, value: float) -> float:
-        new_count = len(self._items) + 1
-        new_real  = self.real_sum + value
-        new_cs    = value * new_count
-        if new_cs <= 0:
-            return 0.0
-        slack = new_cs - new_real
-        return 0.0 if slack <= 0 else slack / new_real
+    def can_add(self, number) -> bool:
+        """
+        التحقق من إمكانية إضافة الرقم بناءً على 
 
-    def can_add(self, value: float) -> bool:
-        value = self._validate(value)
-        if not self._items:
+الشروط:
+        1. الرقم >= السقف الحالي.
+        2. المجموع السقفي لا يتجاوز المجموع الحقيقي بنسبة أعلى من 12%.
+        """
+        # إذا كانت الحاوية فارغة، نُجيز الإضافة مباشرة
+        if not self.numbers:
             return True
-        if value < self.ceiling:
+
+        # الشرط الأول: ألا يكون الرقم أقل من السقف الحالي
+        if number < self.ceiling:
             return False
-        return self._slack_ratio_if_added(value) <= self._max_slack + self._EPS
+
+        # محاكاة تجريبية للإضافة قبل واعتمادها
+        temp_numbers = self.numbers + [number]
+        temp_ceiling = max(temp_numbers)
+        temp_limit_sum = temp_ceiling * len(temp_numbers)
+        temp_real_sum = sum(temp_numbers)
 
 
-    def rejection_reason(self, value: float) -> str:
-        value = self._validate(value)
-        if not self._items:
-            return ""
-        if value < self.ceiling:
-            return f"الرقم {value:g} < السقف الحالي {self.ceiling:g}"
-        r = self._slack_ratio_if_added(value)
-        return f"لو أُضيف، نسبة التجاوز ≈ {r:.2%} > {self._max_slack:.0%}"
+        # الحد الأقصى المسموح للمجموع السقفي مع نسبة السماح (12%)
+        max_allowed_limit = temp_real_sum * (1 + self.max_overflow_ratio)
 
-    # -------- الإضافة --------
-    def add(self, value: float) -> "CeilingContainer":
-        value = self._validate(value)
-        if self.can_add(value):
-            self._items.append(value)
+        # شرط القبول: المجموع السقفي يجب ألا يتجاوز الحد المسموح
+        return temp_limit_sum <= max_allowed_limit
+
+    def add(self, number):
+        """
+        إضافة رقم للحاوية:
+        - إذا تحققت الشروط يُضاف للحاوية الحالية وتُرجع نفس الحاوية.
+        - عند التجاوز، تُنشأ وتُرجع نسخة (حاوية) جديدة يوضع بها الرقم.
+        """
+        if self.can_add(number):
+            self.numbers.append(number)
+
             return self
-        return type(self)([value], 
-
-self._max_slack)
-
-    def add_or_spill(self, value: float) -> Tuple["CeilingContainer", bool]:
-        value = self._validate(value)
-        if self.can_add(value):
-            self._items.append(value)
-            return self, False
-        return type(self)([value], self._max_slack), True
-
-    # -------- بروتوكولات --------
-    def __len__(self) -> int: return len(self._items)
-    def __iter__(self) -> Iterator[float]: return iter(self._items)
-    def __contains__(self, v: object) -> bool: return v in self._items
-    def __repr__(self) -> str:
-        return (f"CeilingContainer(items={self._items}, ceiling={self.ceiling:g}, "
-                f"sum={self.real_sum:g}, slack={self.slack_ratio:.2%})")
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, CeilingContainer): return NotImplemented
-        return self._items == other._items and self._max_slack == other._max_slack
-
-
-# =============================================================================
-#  2) دوال التوزيع
-# =============================================================================
-def distribute_sequential(numbers: List[float], max_slack: float
-
-                         ) -> Tuple[List[CeilingContainer], List[dict]]:
-    """تسلسلي: كل رقم يُجرَّب على الحاوية الحالية فقط، وإلا حاوية جديدة."""
-    containers: List[CeilingContainer] = []
-    log: List[dict] = []
-    current: CeilingContainer | None = None
-
-    for n in numbers:
-        if current is None:
-            current = CeilingContainer([n], max_slack_ratio=max_slack)
-            containers.append(current)
-            log.append({"الرقم": n, "الحاوية": len(containers),
-                        "القرار": "بداية جديدة",
-                        "نسبة التجاوز بعد": current.slack_ratio,
-                        "السبب": "أول رقم"})
-            continue
-
-        if current.can_add(n):
-            current.add(n)
-            log.append({"الرقم": n, "الحاوية": len(containers),
-                        "القرار": "قبول",
-                        "نسبة التجاوز بعد": current.slack_ratio,
-                        "السبب": ""})
         else:
-            reason = current.rejection_reason(n)
-            current = CeilingContainer([n], max_slack_ratio=max_slack)
-            containers.append(current)
-            log.append({"الرقم": n, "الحاوية": len(containers),
-                        "القرار": "تجاوز → حاوية جديدة",
-                        "نسبة التجاوز بعد": current.slack_ratio,
-                        "السبب": reason})
-    return containers, log
+            # إنشاء حاوية جديدة مع الاحتفاظ بنسبة التجاوز نفسها
+            new_container = SmartContainer(
+                initial_number=number, 
+                max_overflow_ratio=self.max_overflow_ratio
+            )
+            return new_container
 
-
-def distribute_first_fit(numbers: List[float], max_slack: float
-                         ) -> Tuple[List[CeilingContainer], List[dict]]:
-    """أول-ملائم: يُجرَّب كل رقم على الحاويات بالترتيب، أول حاوية تقبله."""
-    containers: List[CeilingContainer] = []
-    log: List[dict] = []
-
-    for n in numbers:
-        placed = False
-        for i, c in enumerate(containers, 1):
-            if c.can_add(n):
-                c.add(n)
-                log.append({"الرقم": n, "الحاوية": i, "القرار": "قبول",
-                            "نسبة التجاوز بعد": c.slack_ratio, "السبب": ""})
-                placed = True
-                break
-
-        if not placed:
-            new = CeilingContainer([n], max_slack_ratio=max_slack)
-            containers.append(new)
-            log.append({"الرقم": n, "الحاوية": len(containers),
-                        "القرار": "حاوية جديدة",
-                        "نسبة التجاوز بعد": new.slack_ratio,
-                        "السبب": "لا حاوية حالية تقبله"})
-    return containers, log
-
-
-
+    def __repr__(self):
+        return (f"SmartContainer(numbers={self.numbers}, "
+                f"ceiling={self.ceiling}, "
+                f"real_sum={self.current_sum}, "
+                f"limit_sum={self.limit_sum})")
